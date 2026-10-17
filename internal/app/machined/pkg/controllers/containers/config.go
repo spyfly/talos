@@ -171,7 +171,8 @@ func applyConfig(spec *containers.ContainerSpecSpec, cfg configcfg.ContainerConf
 	}
 
 	spec.Network = containers.ContainerNetworkSpec{
-		HostNetwork: cfg.Network().Mode() == configcfg.ContainerNetworkModeHost,
+		HostNetwork:    cfg.Network().Mode() == configcfg.ContainerNetworkModeHost,
+		NetnsContainer: cfg.Network().NetnsContainer(),
 	}
 
 	resources := cfg.Resources()

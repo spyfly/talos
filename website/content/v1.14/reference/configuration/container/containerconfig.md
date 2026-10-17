@@ -230,7 +230,7 @@ ContainerNetwork configures the container's network namespace.
 
 | Field | Type | Description | Value(s) |
 |-------|------|-------------|----------|
-|`mode` |ContainerNetworkMode |Network mode.<br><br>`none` gives the container its own empty network namespace with no host access.<br>`host` shares the host network namespace, so the container sees every interface and<br>can bind any port.  |`none`<br />`host`<br /> |
+|`mode` |ContainerNetworkMode |Network mode.<br><br>`none` gives the container its own empty network namespace with no host access.<br>`host` shares the host network namespace, so the container sees every interface and<br>can bind any port.<br>`container:<name>` joins the network namespace of another container declared with a<br>`ContainerConfig` document: the two containers share one network and reach each other<br>over the loopback interface, and the joining container has no interfaces of its own.<br>The target container must be running before this container starts; when the target<br>restarts, this container is restarted into the target's new network namespace.  |`none`<br />`host`<br />`container:<name>`<br /> |
 
 
 

@@ -137,6 +137,43 @@ func (r *containerdRunner) Run(
 		selinuxLabel = constants.SelinuxLabelTalosContainerMachined
 	}
 
+	ociOpts := r.ociSpecOpts(spec, image)
+
+	// A container joining another container's network namespace points its own netns at the
+	// pinned source instance's current task: /proc/<pid>/ns/net is resolved here, at start time,
+	// because a task's netns is created by runc during start and does not exist before.
+	//
+	// The instance spec pinned one source generation (see ContainerInstanceSpecSpec); if that
+	// generation's task is gone by now (target restarted between the pin and this start), the
+	// start fails cleanly instead of joining something unexpected, and the normal restart path
+	// re-pins against the target's newest running generation.
+	if spec.NetnsSourceInstance != "" {
+		ctr, err := r.client.LoadContainer(withNamespace(ctx), spec.NetnsSourceInstance)
+		if err != nil {
+			if errdefs.IsNotFound(err) {
+				return 0, fmt.Errorf("network namespace source %q is not running", spec.NetnsSourceInstance)
+			}
+
+			return 0, fmt.Errorf("failed to load network namespace source %q: %w", spec.NetnsSourceInstance, err)
+		}
+
+		task, err := ctr.Task(withNamespace(ctx), nil)
+		if err != nil {
+			return 0, fmt.Errorf("failed to get task of network namespace source %q: %w", spec.NetnsSourceInstance, err)
+		}
+
+		if task.Pid() == 0 {
+			return 0, fmt.Errorf("network namespace source %q has no running task", spec.NetnsSourceInstance)
+		}
+
+		// WithNetNSPath equivalent: containerd's oci package composes it from the namespace entry
+		// override, which replaces the default "new" network namespace by type.
+		ociOpts = append(ociOpts, oci.WithLinuxNamespace(specs.LinuxNamespace{
+			Type: specs.NetworkNamespace,
+			Path: fmt.Sprintf("/proc/%d/ns/net", task.Pid()),
+		}))
+	}
+
 	svc := containerdrunner.NewRunner(false,
 		&runner.Args{ID: id},
 		runner.WithNamespace(constants.TalosContainersContainerdNamespace),
@@ -153,7 +190,7 @@ func (r *containerdRunner) Run(
 		runner.WithGracefulShutdownTimeout(gracefulShutdownTimeout),
 		runner.WithHostNetworkFiles(spec.Network.HostNetwork),
 		runner.WithSelinuxLabel(selinuxLabel),
-		runner.WithOCISpecOpts(r.ociSpecOpts(spec, image)...),
+		runner.WithOCISpecOpts(ociOpts...),
 	)
 
 	if err := svc.Open(); err != nil {

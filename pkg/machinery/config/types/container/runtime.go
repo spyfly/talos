@@ -33,9 +33,15 @@ type ContainerNetwork struct {
 	//     `none` gives the container its own empty network namespace with no host access.
 	//     `host` shares the host network namespace, so the container sees every interface and
 	//     can bind any port.
+	//     `container:<name>` joins the network namespace of another container declared with a
+	//     `ContainerConfig` document: the two containers share one network and reach each other
+	//     over the loopback interface, and the joining container has no interfaces of its own.
+	//     The target container must be running before this container starts; when the target
+	//     restarts, this container is restarted into the target's new network namespace.
 	//   values:
 	//     - none
 	//     - host
+	//     - 'container:<name>'
 	//   schema:
 	//     type: string
 	NetworkMode config.ContainerNetworkMode `yaml:"mode,omitempty"`
@@ -57,14 +63,46 @@ func (n *ContainerNetwork) Mode() config.ContainerNetworkMode {
 	return n.NetworkMode
 }
 
+// NetnsContainer implements config.ContainerNetworkConfig interface.
+//
+// Returns the container name carried by a "container:<name>" network mode, or empty for the
+// none and host modes.
+func (n *ContainerNetwork) NetnsContainer() string {
+	mode := string(n.NetworkMode)
+
+	if !strings.HasPrefix(mode, string(config.ContainerNetworkModeContainerPrefix)) {
+		return ""
+	}
+
+	return strings.TrimPrefix(mode, string(config.ContainerNetworkModeContainerPrefix))
+}
+
 // Validate checks the network settings.
 func (n *ContainerNetwork) Validate() error {
 	switch n.Mode() {
 	case config.ContainerNetworkModeNone, config.ContainerNetworkModeHost:
 		return nil
-	default:
-		return fmt.Errorf("unsupported network mode %q, expected none or host", n.NetworkMode)
 	}
+
+	if target := n.NetnsContainer(); target != "" {
+		return validateContainerName(target)
+	}
+
+	// Reaching here with a "container:" prefix means the name after it was empty.
+	return fmt.Errorf("unsupported network mode %q, expected none, host or container:<name>", n.NetworkMode)
+}
+
+// validateContainerName checks a name referring to another container, e.g. a network namespace
+// source, against the same rules as the container's own name.
+func validateContainerName(name string) error {
+	switch {
+	case len(name) > maxNameLength:
+		return fmt.Errorf("container name %q must be %d characters or fewer", name, maxNameLength)
+	case !validNamePattern.MatchString(name):
+		return fmt.Errorf("container name %q can only contain lowercase ASCII letters, digits and hyphens", name)
+	}
+
+	return nil
 }
 
 // ContainerResources configures cgroup v2 resource limits.

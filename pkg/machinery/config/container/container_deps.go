@@ -29,7 +29,7 @@ func validateContainerDependencies(configs []config.ContainerConfig) error {
 
 	if cycles := detectContainerDependencyCycles(names, edges); len(cycles) > 0 {
 		errs = multierror.Append(errs,
-			fmt.Errorf("container dependsOn cycle detected: %s", strings.Join(cycles, ", ")))
+			fmt.Errorf("container dependency cycle detected: %s", strings.Join(cycles, ", ")))
 	}
 
 	if errs == nil {
@@ -63,6 +63,18 @@ func buildContainerDependencyGraph(configs []config.ContainerConfig) (map[string
 				errs = multierror.Append(errs,
 					fmt.Errorf("container %q depends on container %q, which is not configured", cfg.Name(), dep))
 			}
+		}
+
+		// Joining another container's network namespace is an implicit dependency on it: the
+		// source must be configured, and a cycle through it is as fatal as a dependsOn cycle,
+		// since neither container in one could ever start first.
+		if netnsTarget := cfg.Network().NetnsContainer(); netnsTarget != "" {
+			if _, exists := names[netnsTarget]; !exists {
+				errs = multierror.Append(errs,
+					fmt.Errorf("container %q joins the network namespace of container %q, which is not configured", cfg.Name(), netnsTarget))
+			}
+
+			deps = append(slices.Clone(deps), netnsTarget)
 		}
 
 		edges[cfg.Name()] = deps

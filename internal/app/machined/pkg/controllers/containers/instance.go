@@ -444,6 +444,22 @@ func (ctrl *InstanceController) createInstanceSpec(
 			instanceSpec.Network = containerSpec.TypedSpec().Network
 			instanceSpec.Resources = containerSpec.TypedSpec().Resources
 
+			// Pin the network namespace source generation at creation time: the runner joins that
+			// exact instance's netns, and the pin is what triggers the joined container's own
+			// replacement when the target moves to a newer running generation (see
+			// ContainerInstanceSpecSpec.InSyncWithContainerSpec).
+			if containerSpec.TypedSpec().Network.NetnsContainer != "" {
+				netnsSource, err := containers.ResolveNetnsSourceInstance(ctx, runtime, containerSpec.TypedSpec().Network.NetnsContainer)
+				if err != nil {
+					return fmt.Errorf("failed to resolve netns source %q: %w", containerSpec.TypedSpec().Network.NetnsContainer, err)
+				}
+
+				// Ready() gates creation on the target running, so this resolves in practice; an
+				// empty result here (target replaced in between) leaves the join unset, which fails
+				// fast at task start and is retried via the normal failed-instance restart path.
+				instanceSpec.NetnsSourceInstance = netnsSource
+			}
+
 			return nil
 		},
 	)

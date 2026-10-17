@@ -5,6 +5,7 @@
 package containers
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -70,6 +71,15 @@ type ContainerInstanceSpecSpec struct {
 	Security  ContainerSecuritySpec  `yaml:"security,omitempty" protobuf:"10"`
 	Network   ContainerNetworkSpec   `yaml:"network,omitempty" protobuf:"11"`
 	Resources ContainerResourcesSpec `yaml:"resources,omitempty" protobuf:"12"`
+
+	// NetnsSourceInstance pins the exact ContainerInstanceSpec ID ("<container>-<generation>") of
+	// the container whose network namespace this instance joins; empty when it has its own.
+	//
+	// Each generation runs in a freshly created network namespace, so joining "the target" means
+	// joining one generation of it; the pin is what makes a joined container follow the target
+	// across target restarts: the next generation's ID fails the sync comparison and the joined
+	// instance is replaced into the new namespace.
+	NetnsSourceInstance string `yaml:"netnsSourceInstance,omitempty" protobuf:"13"`
 }
 
 // ResolvedMountSpec is a mount with its host-side source resolved.
@@ -219,6 +229,24 @@ func (instanceSpec ContainerInstanceSpecSpec) InSyncWithContainerSpec(ctx contex
 		return false, nil
 	}
 
+	if containerSpec.Network.NetnsContainer != "" {
+		netnsSource, err := ResolveNetnsSourceInstance(ctx, r, containerSpec.Network.NetnsContainer)
+		if err != nil {
+			return false, err
+		}
+
+		if netnsSource != "" && netnsSource != instanceSpec.NetnsSourceInstance {
+			// The target container's newest running generation changed, which means it moved to a
+			// freshly created network namespace: the joined instance follows it by being replaced.
+			//
+			// While the target has no running instance at all (it is being replaced), the pin is
+			// stale by definition but so is every other choice; keeping the instance running, as
+			// with an unresolved image digest, avoids flapping and the replacement happens as soon
+			// as the target is back.
+			return false, nil
+		}
+	}
+
 	expectedResolvedMounts, err := containerSpec.GetResolvedMounts(ctx, r, instanceSpec.ContainerID)
 	if err != nil {
 		return false, err
@@ -260,6 +288,55 @@ func GetImageDigest(ctx context.Context, r controller.Reader, containerID, image
 	}
 
 	return imageStatus.TypedSpec().Digest, nil
+}
+
+// ResolveNetnsSourceInstance returns the ID of the newest running instance of targetContainer,
+// which a joining container should use as its network namespace source, or an empty string if the
+// target currently has no running instance.
+//
+// Only a running generation is a valid source: the target's network namespace exists exactly as
+// long as its task does, and each generation of the target runs in a fresh one. Older generations
+// are only checked when a newer one is not running, to cover the moment where a replacement has
+// been created but has not started yet.
+func ResolveNetnsSourceInstance(ctx context.Context, r controller.Reader, targetContainer string) (string, error) {
+	if targetContainer == "" {
+		return "", nil
+	}
+
+	instanceSpecs, err := safe.ReaderListAll[*ContainerInstanceSpec](ctx, r)
+	if err != nil {
+		return "", fmt.Errorf("failed to list container instances: %w", err)
+	}
+
+	matching := []*ContainerInstanceSpec{}
+
+	for instanceSpec := range instanceSpecs.All() {
+		if instanceSpec.TypedSpec().ContainerID == targetContainer {
+			matching = append(matching, instanceSpec)
+		}
+	}
+
+	// Highest generation first, so the newest one with a running task wins.
+	slices.SortFunc(matching, func(a, b *ContainerInstanceSpec) int {
+		return cmp.Compare(b.TypedSpec().Generation, a.TypedSpec().Generation)
+	})
+
+	for _, instanceSpec := range matching {
+		status, err := safe.ReaderGetByID[*ContainerInstanceStatus](ctx, r, instanceSpec.Metadata().ID())
+		if err != nil {
+			if state.IsNotFoundError(err) {
+				continue
+			}
+
+			return "", fmt.Errorf("failed to get instance status %q: %w", instanceSpec.Metadata().ID(), err)
+		}
+
+		if status.TypedSpec().Phase == ContainerInstancePhaseRunning && status.TypedSpec().PID != 0 {
+			return instanceSpec.Metadata().ID(), nil
+		}
+	}
+
+	return "", nil
 }
 
 // Int32PtrEqual compares two int32 pointers, treating nil as equal only to nil.

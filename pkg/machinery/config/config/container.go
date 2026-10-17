@@ -110,12 +110,20 @@ const (
 	ContainerNetworkModeNone ContainerNetworkMode = "none"
 	// ContainerNetworkModeHost shares the host network namespace.
 	ContainerNetworkModeHost ContainerNetworkMode = "host"
+	// ContainerNetworkModeContainerPrefix prefixes a network mode that joins another container's
+	// network namespace: "container:<name>" joins the netns of the container named <name>, so the
+	// two containers share one network and reach each other over the loopback interface.
+	ContainerNetworkModeContainerPrefix ContainerNetworkMode = "container:"
 )
 
 // ContainerNetworkConfig defines the container network settings.
 type ContainerNetworkConfig interface {
 	// Mode is the network namespace mode; defaults to none.
 	Mode() ContainerNetworkMode
+	// NetnsContainer is the name of the container whose network namespace is joined.
+	//
+	// Empty unless Mode() carries the ContainerNetworkModeContainerPrefix.
+	NetnsContainer() string
 }
 
 // ContainerResourcesConfig defines container resource limits.

@@ -30,6 +30,12 @@ import (
 // Paths are the one dependency with no COSI equivalent, so they have to be polled.
 const pathPollInterval = time.Second
 
+// netnsPollInterval is how often to re-check a "container:<name>" network namespace source.
+//
+// Unlike paths, a netns source change also delivers a COSI event; the poll interval only bounds
+// the wait.
+const netnsPollInterval = 5 * time.Second
+
 // ContainerSpecType is type of ContainerSpec resource.
 const ContainerSpecType = resource.Type("ContainerSpecs.containers.talos.dev")
 
@@ -60,7 +66,7 @@ type ContainerSpecSpec struct {
 	DependsOn ContainerDependsOnSpec `yaml:"dependsOn,omitempty" protobuf:"11"`
 }
 
-// Ready reports the container's unmet dependencies (image, mounts, dependsOn gates),
+// Ready reports the container's unmet dependencies (image, mounts, dependsOn gates, netns source),
 // and how soon to recheck them.
 //
 // containerID is the owning ContainerSpec resource's ID: the spec itself doesn't carry it.
@@ -94,6 +100,25 @@ func (containerSpec ContainerSpecSpec) Ready(ctx context.Context, r controller.R
 	}
 
 	waitingFor = append(waitingFor, unmet...)
+
+	// A container joining another container's network namespace waits for the target to have a
+	// running instance: the netns exists only while the target's task does. This is the runtime
+	// half of that dependency, checked here whether or not dependsOn.containers lists the target,
+	// so ordering never has to be declared twice.
+	if containerSpec.Network.NetnsContainer != "" {
+		netnsSource, err := ResolveNetnsSourceInstance(ctx, r, containerSpec.Network.NetnsContainer)
+		if err != nil {
+			return nil, optional.None[time.Duration](), err
+		}
+
+		if netnsSource == "" {
+			waitingFor = append(waitingFor, "netns: "+containerSpec.Network.NetnsContainer)
+
+			if _, ok := wakeUpAfter.Get(); !ok {
+				wakeUpAfter = optional.Some(netnsPollInterval)
+			}
+		}
+	}
 
 	return waitingFor, wakeUpAfter, nil
 }
@@ -225,6 +250,12 @@ func (a ContainerSecuritySpec) Equal(b ContainerSecuritySpec) bool {
 type ContainerNetworkSpec struct {
 	// HostNetwork shares the host network namespace instead of creating an empty one.
 	HostNetwork bool `yaml:"hostNetwork,omitempty" protobuf:"1"`
+	// NetnsContainer is the name of the container whose network namespace this container joins;
+	// empty when it has a network namespace of its own.
+	//
+	// Set by the config controller from a "container:<name>" network mode. The joined container
+	// shares the target's loopback and sees none of the host's interfaces.
+	NetnsContainer string `yaml:"netnsContainer,omitempty" protobuf:"2"`
 }
 
 // ContainerResourcesSpec is the resolved cgroup configuration, in bytes and millicores.

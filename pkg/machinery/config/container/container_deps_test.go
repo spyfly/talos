@@ -30,6 +30,17 @@ func newContainerDoc(name string, dependsOn ...string) *containercfg.ContainerCo
 	return doc
 }
 
+// newNetnsContainerDoc builds a ContainerConfig document joining another container's network
+// namespace, optionally with dependsOn.containers entries.
+func newNetnsContainerDoc(name, netnsTarget string, dependsOn ...string) *containercfg.ContainerConfigV1Alpha1 {
+	doc := newContainerDoc(name, dependsOn...)
+	doc.NetworkConfig = &containercfg.ContainerNetwork{
+		NetworkMode: config.ContainerNetworkMode(string(config.ContainerNetworkModeContainerPrefix) + netnsTarget),
+	}
+
+	return doc
+}
+
 // validateDocs runs container-level validation over the given documents.
 func validateDocs(t *testing.T, docs ...*containercfg.ContainerConfigV1Alpha1) error {
 	t.Helper()
@@ -86,7 +97,7 @@ func TestContainerDependencyCycles(t *testing.T) {
 				newContainerDoc("a", "b"),
 				newContainerDoc("b", "a"),
 			},
-			expectedErr: "container dependsOn cycle detected",
+			expectedErr: "container dependency cycle detected",
 		},
 		{
 			name: "three-node cycle",
@@ -95,7 +106,7 @@ func TestContainerDependencyCycles(t *testing.T) {
 				newContainerDoc("b", "c"),
 				newContainerDoc("c", "a"),
 			},
-			expectedErr: "container dependsOn cycle detected",
+			expectedErr: "container dependency cycle detected",
 		},
 		{
 			name: "dangling reference",
@@ -103,6 +114,50 @@ func TestContainerDependencyCycles(t *testing.T) {
 				newContainerDoc("a", "nonexistent"),
 			},
 			expectedErr: `depends on container "nonexistent", which is not configured`,
+		},
+		{
+			name: "netns join of a configured container",
+			docs: []*containercfg.ContainerConfigV1Alpha1{
+				newNetnsContainerDoc("a", "b"),
+				newContainerDoc("b"),
+			},
+		},
+		{
+			name: "netns join with a matching dependsOn entry is not a duplicate edge",
+			docs: []*containercfg.ContainerConfigV1Alpha1{
+				newNetnsContainerDoc("a", "b", "b"),
+				newContainerDoc("b"),
+			},
+		},
+		{
+			name: "netns join of an unconfigured container",
+			docs: []*containercfg.ContainerConfigV1Alpha1{
+				newNetnsContainerDoc("a", "ghost"),
+			},
+			expectedErr: `joins the network namespace of container "ghost", which is not configured`,
+		},
+		{
+			name: "netns join cycle",
+			docs: []*containercfg.ContainerConfigV1Alpha1{
+				newNetnsContainerDoc("a", "b"),
+				newNetnsContainerDoc("b", "a"),
+			},
+			expectedErr: "container dependency cycle detected",
+		},
+		{
+			name: "container joining its own netns",
+			docs: []*containercfg.ContainerConfigV1Alpha1{
+				newNetnsContainerDoc("a", "a"),
+			},
+			expectedErr: "container dependency cycle detected",
+		},
+		{
+			name: "mixed cycle through dependsOn and netns join",
+			docs: []*containercfg.ContainerConfigV1Alpha1{
+				newNetnsContainerDoc("a", "b"),
+				newContainerDoc("b", "a"),
+			},
+			expectedErr: "container dependency cycle detected",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
